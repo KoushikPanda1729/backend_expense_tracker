@@ -1,0 +1,52 @@
+{
+  "name": "kharcha-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "API for the Kharcha expense tracker (Express + TypeScript + PostgreSQL)",
+  "main": "dist/server.js",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:create": "tsx scripts/create-db.ts",
+    "migrate": "node-pg-migrate up -m migrations --envPath .env",
+    "migrate:down": "node-pg-migrate down -m migrations --envPath .env",
+    "migrate:create": "node-pg-migrate create -m migrations --migration-file-language sql"
+  },
+  "dependencies": {
+    "argon2": "^0.41.1",
+    "compression": "^1.7.5",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^5.1.0",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.0",
+    "node-pg-migrate": "^7.9.0",
+    "pdf-parse": "^1.1.1",
+    "pg": "^8.13.1",
+    "pino": "^9.5.0",
+    "pino-http": "^10.3.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/compression": "^1.7.5",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/multer": "^1.4.12",
+    "@types/node": "^22.10.0",
+    "@types/pdf-parse": "^1.1.4",
+    "@types/pg": "^8.11.10",
+    "@types/supertest": "^6.0.2",
+    "pino-pretty": "^13.0.0",
+    "supertest": "^7.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
