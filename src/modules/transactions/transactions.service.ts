@@ -28,15 +28,32 @@ const toDto = (t: TxnRow) => ({
   createdAt: t.created_at,
 });
 
-const encodeCursor = (t: TxnRow) => Buffer.from(`${t.txn_date}|${t.id}`).toString('base64url');
+// Date sorts use keyset cursors ("k:<date>|<id>"); amount sorts use offsets ("o:<n>").
+const encodeKeyset = (t: TxnRow) => Buffer.from(`k:${t.txn_date}|${t.id}`).toString('base64url');
+const encodeOffset = (n: number) => Buffer.from(`o:${n}`).toString('base64url');
 
-function decodeCursor(c: string): [string, string] {
-  const [d, id] = Buffer.from(c, 'base64url').toString().split('|');
-  if (!d || !id || !/^\d{4}-\d{2}-\d{2}$/.test(d) || !/^[0-9a-f-]{36}$/i.test(id)) throw badRequest('Invalid cursor');
-  return [d, id];
+type Cursor = { kind: 'keyset'; date: string; id: string } | { kind: 'offset'; n: number };
+
+function decodeCursor(c: string): Cursor {
+  const raw = Buffer.from(c, 'base64url').toString();
+  if (raw.startsWith('o:')) {
+    const n = Number(raw.slice(2));
+    if (Number.isInteger(n) && n >= 0) return { kind: 'offset', n };
+  } else if (raw.startsWith('k:')) {
+    const [d, id] = raw.slice(2).split('|');
+    if (d && id && /^\d{4}-\d{2}-\d{2}$/.test(d) && /^[0-9a-f-]{36}$/i.test(id)) return { kind: 'keyset', date: d, id };
+  }
+  throw badRequest('Invalid cursor');
 }
 
-/** Newest first, keyset pagination: pass `nextCursor` from the last page as `cursor`. */
+const ORDER = {
+  newest: 'txn_date DESC, id DESC',
+  oldest: 'txn_date ASC, id ASC',
+  highest: 'amount DESC, txn_date DESC, id DESC',
+  lowest: 'amount ASC, txn_date DESC, id DESC',
+} as const;
+
+/** Pass `nextCursor` from the previous page as `cursor` to get the next one. */
 export async function listTransactions(userId: string, q: ListQuery) {
   const params: unknown[] = [userId];
   const where = ['user_id = $1'];
@@ -53,22 +70,39 @@ export async function listTransactions(userId: string, q: ListQuery) {
     const like = `%${q.q.replace(/[\\%_]/g, '\\$&')}%`;
     add((n) => `(merchant ILIKE $${n} OR category ILIKE $${n})`, like);
   }
+
+  const byAmount = q.sort === 'highest' || q.sort === 'lowest';
+  let offset = 0;
   if (q.cursor) {
-    const [d, id] = decodeCursor(q.cursor);
-    params.push(d, id);
-    where.push(`(txn_date, id) < ($${params.length - 1}::date, $${params.length}::uuid)`);
+    const c = decodeCursor(q.cursor);
+    if (byAmount) {
+      if (c.kind !== 'offset') throw badRequest('Cursor does not match the sort order');
+      offset = c.n;
+    } else {
+      if (c.kind !== 'keyset') throw badRequest('Cursor does not match the sort order');
+      params.push(c.date, c.id);
+      const op = q.sort === 'newest' ? '<' : '>';
+      where.push(`(txn_date, id) ${op} ($${params.length - 1}::date, $${params.length}::uuid)`);
+    }
   }
   params.push(q.limit + 1);
+  const limitParam = params.length;
+  let offsetSql = '';
+  if (offset > 0) {
+    params.push(offset);
+    offsetSql = ` OFFSET $${params.length}`;
+  }
 
   const rows = await query<TxnRow>(
     `SELECT * FROM transactions WHERE ${where.join(' AND ')}
-     ORDER BY txn_date DESC, id DESC LIMIT $${params.length}`,
+     ORDER BY ${ORDER[q.sort]} LIMIT $${limitParam}${offsetSql}`,
     params,
   );
   const page = rows.slice(0, q.limit);
+  const more = rows.length > q.limit;
   return {
     items: page.map(toDto),
-    nextCursor: rows.length > q.limit ? encodeCursor(page[page.length - 1]!) : null,
+    nextCursor: !more ? null : byAmount ? encodeOffset(offset + q.limit) : encodeKeyset(page[page.length - 1]!),
   };
 }
 

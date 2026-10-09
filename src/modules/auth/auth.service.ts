@@ -13,6 +13,9 @@ export interface UserRow {
   phone: string;
   phone_e164: string;
   password_hash: string;
+  username: string | null;
+  photo_key: string | null;
+  opening_balance: number;
   created_at: string;
 }
 
@@ -26,6 +29,9 @@ export const toPublicUser = (u: UserRow) => ({
   name: u.name,
   countryCode: u.country_code,
   phone: u.phone,
+  username: u.username,
+  photoUrl: u.photo_key ? '/api/v1/users/me/photo' : null,
+  openingBalance: u.opening_balance,
   createdAt: u.created_at,
 });
 

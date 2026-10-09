@@ -15,6 +15,7 @@ export const listQuery = z.object({
     .transform((v) => (v ? v.split(',').map((s) => s.trim()).filter(Boolean) : undefined))
     .pipe(z.array(category).optional()),
   q: z.string().trim().max(100).optional(),
+  sort: z.enum(['newest', 'oldest', 'highest', 'lowest']).default('newest'),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().max(200).optional(),
 });

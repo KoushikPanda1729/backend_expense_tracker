@@ -17,6 +17,11 @@ const schema = z.object({
     .default('')
     .transform((v) => v.split(',').map((s) => s.trim()).filter(Boolean)),
 
+  // 32 random bytes as 64 hex characters. Encrypts saved PDF passwords and the stored statement files.
+  // Generate: openssl rand -hex 32   (losing this key makes saved passwords and files unreadable)
+  ENCRYPTION_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/, 'ENCRYPTION_KEY must be 64 hex characters (openssl rand -hex 32)'),
+  QPDF_PATH: z.string().default('qpdf'),
+
   STORAGE_DIR: z.string().default('./storage'),
   MAX_UPLOAD_MB: z.coerce.number().positive().default(15),
 

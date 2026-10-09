@@ -44,17 +44,26 @@ nothing else changes.
 | POST | `/auth/login` | `{ countryCode, phone, password }` |
 | POST | `/auth/refresh` | `{ refreshToken }` rotates the refresh token |
 | POST | `/auth/logout` | `{ refreshToken }` |
-| GET / PATCH | `/users/me` | profile, `{ name }` |
+| GET / PATCH | `/users/me` | profile; PATCH `{ name?, username? }` |
+| PUT / GET / DELETE | `/users/me/photo` | profile photo. PUT is multipart, field `photo` (JPEG/PNG/WebP, max 5 MB), stored in `STORAGE_DIR/avatars` |
+| DELETE | `/users/me/data` | "Reset data": removes transactions, statements, budgets and stored PDFs |
+| DELETE | `/users/me` | deletes the account and every file; body `{ password }` |
 | POST | `/users/me/password` | `{ currentPassword, newPassword }`, signs out all devices |
-| POST | `/statements` | multipart, field `file` (PDF). Stores it, parses it (SBI), imports the transactions |
+| GET / POST | `/pdf-passwords` | saved PDF passwords. GET returns `{ id, label, lastUsedAt }` only (the dropdown); POST `{ label, password }` |
+| PATCH / DELETE | `/pdf-passwords/:id` | rename / change the password / remove |
+| POST | `/statements/preview` | same form as the upload, **saves nothing**: how many rows are new vs already imported, totals, period, first 5 rows |
+| POST | `/statements` | multipart: `file` (PDF) plus, for a locked PDF, `passwordId` (saved) or `password` (typed, add `savePassword=true` and `passwordLabel` to remember it). With none of them every saved password is tried. Stores the **unlocked** PDF, imports the transactions |
 | GET | `/statements`, `/statements/:id` | list / one |
-| GET | `/statements/:id/file` | download the original PDF |
+| GET | `/statements/:id/file` | download the PDF **unlocked** (no password needed to open it) |
 | DELETE | `/statements/:id` | removes the file and the transactions imported from it |
-| GET | `/transactions` | `?from&to&type=income\|expense&category=Food,Travel&q&limit&cursor` |
+| GET | `/transactions` | `?from&to&type=income\|expense&category=Food,Travel&q&sort=newest\|oldest\|highest\|lowest&limit&cursor` |
 | POST / PATCH / DELETE | `/transactions`, `/transactions/:id` | manual entries |
 | GET | `/budgets` | |
 | PUT / DELETE | `/budgets/:category` | `{ limit }` |
-| GET | `/analytics/summary` | `?from&to` totals, categories, top merchants, monthly |
+| GET | `/analytics/summary` | `?from&to` totals, categories, top merchants, monthly, by weekday, biggest expenses, small payments |
+| GET | `/analytics/series` | `?granularity=day\|week\|month&from&to` income/expense per bucket for the line chart |
+| GET | `/analytics/balance` | `?asOf=YYYY-MM-DD` account balance on that day (latest if omitted) |
+| GET | `/analytics/balance-trend` | `?from&to` running balance per day |
 
 Also: `GET /health` (liveness) and `GET /ready` (checks the database).
 Send `Authorization: Bearer <accessToken>` on everything except `/auth/*`.
@@ -81,9 +90,28 @@ curl -s localhost:4000/api/v1/statements -H "authorization: Bearer $TOKEN" \
 - Keyset pagination for transactions, indexes for the common queries.
 - Graceful shutdown, fail-fast on a missing database, `/ready` for orchestrators, a Dockerfile.
 
+## Locked PDFs, saved passwords and stored files
+
+Banks usually lock statement PDFs. The flow:
+
+1. The app shows a dropdown from `GET /pdf-passwords` (labels only) with "Add new password" and "No password".
+2. The upload sends `passwordId`, or a typed `password` (optionally `savePassword=true`). If the app sends neither,
+   the server tries every saved password, most recently used first, and remembers which one worked.
+3. The server unlocks the file with **qpdf**, reads the rows, and stores **only the unlocked copy**.
+   The locked original is not kept.
+4. Wrong or missing password: `422 PDF_PASSWORD_INCORRECT` / `PDF_PASSWORD_REQUIRED`. The app can ask and send again.
+
+Security notes:
+
+- Saved passwords are **encrypted** (AES-256-GCM) with `ENCRYPTION_KEY`, not hashed, because they must be reused.
+  They are never returned by the API or logged. Stored statements are encrypted with the same key.
+- The key lives only in `.env`. Back it up: losing it makes saved passwords and stored files unreadable.
+- qpdf gets the password through a private temp file (not the command line), deleted right after use.
+- Install qpdf once: `brew install qpdf` (macOS) or `apt install qpdf`. The Dockerfile already does it.
+
 ## Known limits / next steps
 
-- PDF import supports SBI statement layout only, and not password-protected PDFs.
+- PDF import supports the SBI statement layout only (one parser per bank).
 - No password reset yet (planned; changing the password while signed in works).
 - Local file storage until S3 is added.
 - Add a worker queue if statements get big enough that parsing should not block the request.

@@ -4,7 +4,9 @@
   "private": true,
   "description": "API for the Kharcha expense tracker (Express + TypeScript + PostgreSQL)",
   "main": "dist/server.js",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.build.json",
@@ -27,7 +29,7 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.0",
     "node-pg-migrate": "^7.9.0",
-    "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "3.11.174",
     "pg": "^8.13.1",
     "pino": "^9.5.0",
     "pino-http": "^10.3.0",
@@ -40,7 +42,6 @@
     "@types/jsonwebtoken": "^9.0.7",
     "@types/multer": "^1.4.12",
     "@types/node": "^22.10.0",
-    "@types/pdf-parse": "^1.1.4",
     "@types/pg": "^8.11.10",
     "@types/supertest": "^6.0.2",
     "pino-pretty": "^13.0.0",

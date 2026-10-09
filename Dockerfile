@@ -15,6 +15,8 @@ COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY migrations ./migrations
+# qpdf unlocks password-protected statements
+RUN apt-get update && apt-get install -y --no-install-recommends qpdf && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /app/storage && chown -R node:node /app
 USER node
 EXPOSE 4000
