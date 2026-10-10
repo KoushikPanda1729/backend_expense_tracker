@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { createSchema, listQuery, updateSchema } from './transactions.schemas';
+import { createSchema, listQuery, recategorizeSchema, updateSchema } from './transactions.schemas';
 import * as svc from './transactions.service';
 
 export const transactionsRouter = Router();
@@ -13,6 +13,12 @@ transactionsRouter.get('/', async (req, res) => {
 
 transactionsRouter.post('/', async (req, res) => {
   res.status(201).json(await svc.createTransaction(req.userId, createSchema.parse(req.body)));
+});
+
+// "apply to every payment to this merchant" (must stay above /:id)
+transactionsRouter.patch('/recategorize', async (req, res) => {
+  const b = recategorizeSchema.parse(req.body);
+  res.json(await svc.recategorize(req.userId, b.merchant, b.category, b.isIncome));
 });
 
 transactionsRouter.patch('/:id', async (req, res) => {

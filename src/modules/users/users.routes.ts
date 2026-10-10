@@ -82,9 +82,18 @@ usersRouter.post('/me/password', async (req, res) => {
   res.status(204).end();
 });
 
-// "Reset data" in the app: removes transactions, statements, budgets and stored PDFs
+// "Delete my data" in the app. ?scope=transactions,budgets,passwords,photo (comma separated, default: the first three).
+// transactions also removes the imported statements and their stored PDFs. The account and login stay.
+const scopeQuery = z.object({
+  scope: z
+    .string()
+    .optional()
+    .transform((v) => (v ? v.split(',').map((s) => s.trim()).filter(Boolean) : undefined))
+    .pipe(z.array(z.enum(users.DATA_SCOPES)).min(1).optional()),
+});
 usersRouter.delete('/me/data', async (req, res) => {
-  await users.deleteAllData(req.userId);
+  const { scope } = scopeQuery.parse(req.query);
+  await users.deleteData(req.userId, scope ?? ['transactions', 'budgets', 'passwords']);
   res.status(204).end();
 });
 

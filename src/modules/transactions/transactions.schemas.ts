@@ -43,5 +43,10 @@ export const updateSchema = fields
   .partial()
   .refine((v) => Object.keys(v).length > 0, { message: 'Send at least one field to change' });
 
+// move every transaction of one merchant (same direction) to a category
+export const recategorizeSchema = z
+  .object({ merchant: fields.shape.merchant, category, isIncome: z.boolean() })
+  .refine(categoryMatchesType, { message: 'Category does not match the transaction type', path: ['category'] });
+
 export type ListQuery = z.infer<typeof listQuery>;
 export type CreateInput = z.infer<typeof createSchema>;

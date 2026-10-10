@@ -140,6 +140,16 @@ export async function updateTransaction(userId: string, id: string, patch: Parti
   return toDto(rows[0]!);
 }
 
+/** Sets the category of every transaction with this merchant and direction. Returns how many changed. */
+export async function recategorize(userId: string, merchant: string, category: string, isIncome: boolean) {
+  const rows = await query(
+    `UPDATE transactions SET category = $3, updated_at = now()
+      WHERE user_id = $1 AND merchant = $2 AND is_income = $4 AND category <> $3 RETURNING id`,
+    [userId, merchant, category, isIncome],
+  );
+  return { updated: rows.length };
+}
+
 export async function deleteTransaction(userId: string, id: string) {
   const rows = await query('DELETE FROM transactions WHERE id = $1 AND user_id = $2 RETURNING id', [id, userId]);
   if (rows.length === 0) throw notFound('Transaction not found');

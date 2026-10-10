@@ -43,8 +43,35 @@ describe('parseSbiText', () => {
       merchant: 'ANANDA B',
       ref: '600138334049',
       mode: 'UPI',
-      dedupeKey: 'r:600138334049',
+      dedupeKey: 'r:600138334049:e',
     });
+  });
+
+  it('keeps a payment and its reversal (same reference) as two rows', () => {
+    const rev = parseSbiText(`
+05/09/2026 05/09/2026 UPI/DR/624826820619/SHOP/YESB/x@y/Sent
+530.00 1000.00
+06/09/2026 06/09/2026 UPI/CR/624826820619/SHOP/YESB/x@y/Refund
+530.00 1530.00
+`)!;
+    expect(rev.txns).toHaveLength(2);
+    expect(new Set(rev.txns.map((t) => t.dedupeKey)).size).toBe(2);
+  });
+
+  it('names refunds after the payment and files shop QR payments under Shopping', () => {
+    const t = parseSbiText(`
+01/09/2026 01/09/2026 UPI/DR/624414343580/SHRI LAX/YESB/q271056766/UPI
+50.00 950.00
+02/09/2026 02/09/2026 UPI/DR/624826820619/Indian R/SBIN/railsbiupi/UPI
+530.00 420.00
+03/09/2026 03/09/2026 UPI/DR/624454045292/SANJAY K/IOBA/7585905519/UPI
+20.00 400.00
+06/09/2026 06/09/2026 UPI/DRC/624826820619/05092026/25305
+530.00 930.00
+`)!.txns;
+    expect(t.map((x) => x.category)).toEqual(['Shopping', 'Travel', 'Transfer', 'Received']);
+    expect(t[1]!.merchant).toBe('Indian Railways');
+    expect(t[3]!.merchant).toBe('Refund: Indian Railways');
   });
 
   it('categorises by keyword and by direction', () => {

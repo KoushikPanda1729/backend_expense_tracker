@@ -50,18 +50,32 @@ export async function removePhoto(userId: string) {
   if (old) await quietDelete(old);
 }
 
-/** Wipes the user's imported data, transactions, budgets and stored PDFs. Keeps the account and the photo. */
-export async function deleteAllData(userId: string) {
-  const keys = (await query<{ storage_key: string }>('SELECT storage_key FROM statements WHERE user_id = $1', [userId])).map(
-    (r) => r.storage_key,
-  );
+export const DATA_SCOPES = ['transactions', 'budgets', 'passwords', 'photo'] as const;
+export type DataScope = (typeof DATA_SCOPES)[number];
+
+/**
+ * Deletes the chosen parts of the user's data. Keeps the account and login.
+ * - transactions: every transaction, every imported statement and its stored PDF (they are linked)
+ * - budgets, passwords (saved PDF passwords), photo (profile photo)
+ */
+export async function deleteData(userId: string, scopes: readonly DataScope[]) {
+  const has = (s: DataScope) => scopes.includes(s);
+  const keys = has('transactions')
+    ? (await query<{ storage_key: string }>('SELECT storage_key FROM statements WHERE user_id = $1', [userId])).map(
+        (r) => r.storage_key,
+      )
+    : [];
   await withTransaction(async (c) => {
-    await c.query('DELETE FROM transactions WHERE user_id = $1', [userId]);
-    await c.query('DELETE FROM statements WHERE user_id = $1', [userId]);
-    await c.query('DELETE FROM budgets WHERE user_id = $1', [userId]);
-    await c.query('UPDATE users SET opening_balance = 0, updated_at = now() WHERE id = $1', [userId]);
+    if (has('transactions')) {
+      await c.query('DELETE FROM transactions WHERE user_id = $1', [userId]);
+      await c.query('DELETE FROM statements WHERE user_id = $1', [userId]);
+      await c.query('UPDATE users SET opening_balance = 0, updated_at = now() WHERE id = $1', [userId]);
+    }
+    if (has('budgets')) await c.query('DELETE FROM budgets WHERE user_id = $1', [userId]);
+    if (has('passwords')) await c.query('DELETE FROM pdf_passwords WHERE user_id = $1', [userId]);
   });
   await Promise.all(keys.map(quietDelete));
+  if (has('photo')) await removePhoto(userId);
 }
 
 /** Deletes the account and everything that belongs to it, files included. */

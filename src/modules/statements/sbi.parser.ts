@@ -1,4 +1,4 @@
-import { Category, categorize } from '../../lib/categories';
+import { Category, classify } from '../../lib/categories';
 
 export interface ParsedTxn {
   date: string; // YYYY-MM-DD
@@ -64,8 +64,14 @@ export function parseSbiText(text: string): ParsedStatement | null {
     prev = balance;
 
     const date = `${m[3]}-${m[2]}-${m[1]}`;
-    const merchant = merchantOf(raw);
     const ref = refOf(raw);
+    const { category, name } = classify(raw, isIncome);
+    let merchant = name ?? merchantOf(raw);
+    // UPI/DRC/<ref>/... is a refund: it has no shop name, so borrow it from the payment with the same reference
+    if (raw.startsWith('UPI/DRC/')) {
+      const paid = ref ? txns.find((t) => t.ref === ref && !t.isIncome) : undefined;
+      merchant = paid ? `Refund: ${paid.merchant}` : 'Refund';
+    }
     txns.push({
       date,
       amount,
@@ -73,9 +79,10 @@ export function parseSbiText(text: string): ParsedStatement | null {
       isIncome,
       merchant,
       mode: (raw.split(/[/*]/)[0] || 'Bank').slice(0, 20),
-      category: categorize(raw, isIncome),
+      category,
       ref,
-      dedupeKey: ref ? `r:${ref}` : `${date}|${amount}|${isIncome}|${merchant}`,
+      // direction is part of the key: a payment and its reversal share one bank reference
+      dedupeKey: ref ? `r:${ref}:${isIncome ? 'i' : 'e'}` : `${date}|${amount}|${isIncome}|${merchant}`,
     });
   }
 

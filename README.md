@@ -46,7 +46,7 @@ nothing else changes.
 | POST | `/auth/logout` | `{ refreshToken }` |
 | GET / PATCH | `/users/me` | profile; PATCH `{ name?, username? }` |
 | PUT / GET / DELETE | `/users/me/photo` | profile photo. PUT is multipart, field `photo` (JPEG/PNG/WebP, max 5 MB), stored in `STORAGE_DIR/avatars` |
-| DELETE | `/users/me/data` | "Reset data": removes transactions, statements, budgets and stored PDFs |
+| DELETE | `/users/me/data` | "Delete my data": `?scope=transactions,budgets,passwords,photo` (default: first three). `transactions` also removes imported statements and their stored PDFs |
 | DELETE | `/users/me` | deletes the account and every file; body `{ password }` |
 | POST | `/users/me/password` | `{ currentPassword, newPassword }`, signs out all devices |
 | GET / POST | `/pdf-passwords` | saved PDF passwords. GET returns `{ id, label, lastUsedAt }` only (the dropdown); POST `{ label, password }` |
@@ -58,6 +58,7 @@ nothing else changes.
 | DELETE | `/statements/:id` | removes the file and the transactions imported from it |
 | GET | `/transactions` | `?from&to&type=income\|expense&category=Food,Travel&q&sort=newest\|oldest\|highest\|lowest&limit&cursor` |
 | POST / PATCH / DELETE | `/transactions`, `/transactions/:id` | manual entries |
+| PATCH | `/transactions/recategorize` | `{ merchant, category, isIncome }` moves every transaction of that merchant to a category, returns `{ updated }` |
 | GET | `/budgets` | |
 | PUT / DELETE | `/budgets/:category` | `{ limit }` |
 | GET | `/analytics/summary` | `?from&to` totals, categories, top merchants, monthly, by weekday, biggest expenses, small payments |
