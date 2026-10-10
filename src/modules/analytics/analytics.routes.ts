@@ -141,11 +141,15 @@ analyticsRouter.get('/balance-trend', async (req, res) => {
 
 /** "Check your money": payments the app cannot explain, so the user can look them up and label them. */
 analyticsRouter.get('/review', async (req, res) => {
+  // optional ?from&to (YYYY-MM-DD): look at one month, a few months, or everything
+  const { from, to } = rangeQuery.parse(req.query);
   const [rows, rules] = await Promise.all([
     query<ReviewRow>(
       `SELECT id, txn_date, merchant, mode, category, amount, is_income, ref, description, upi_id, bank
-         FROM transactions WHERE user_id = $1 ORDER BY txn_date, id`,
-      [req.userId],
+         FROM transactions
+        WHERE user_id = $1 AND ($2::date IS NULL OR txn_date >= $2) AND ($3::date IS NULL OR txn_date <= $3)
+        ORDER BY txn_date, id`,
+      [req.userId, from ?? null, to ?? null],
     ),
     listRules(req.userId),
   ]);
