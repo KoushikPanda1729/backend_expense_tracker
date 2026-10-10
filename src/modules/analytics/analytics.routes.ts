@@ -12,6 +12,8 @@ const rangeQuery = z.object({ from: date.optional(), to: date.optional() });
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const SIGNED = 'CASE WHEN is_income THEN amount ELSE -amount END';
+// cash and wallet entries are real spending but never touch the bank account's balance
+const IN_BANK = "mode NOT IN ('Cash', 'Wallet')";
 const RANGE = `user_id = $1 AND ($2::date IS NULL OR txn_date >= $2) AND ($3::date IS NULL OR txn_date <= $3)`;
 
 /** Numbers for the Analysis screen: totals, category split, top merchants, month by month, weekdays. */
@@ -113,7 +115,7 @@ analyticsRouter.get('/balance', async (req, res) => {
     await query<{ opening: number; delta: number }>(
       `SELECT u.opening_balance AS opening,
               COALESCE((SELECT SUM(${SIGNED}) FROM transactions t
-                         WHERE t.user_id = u.id AND ($2::date IS NULL OR t.txn_date <= $2)), 0) AS delta
+                         WHERE t.user_id = u.id AND t.mode NOT IN ('Cash', 'Wallet') AND ($2::date IS NULL OR t.txn_date <= $2)), 0) AS delta
          FROM users u WHERE u.id = $1`,
       [req.userId, asOf ?? null],
     )
@@ -127,7 +129,7 @@ analyticsRouter.get('/balance-trend', async (req, res) => {
   const rows = await query<{ day: string; balance: number }>(
     `SELECT day, balance FROM (
         SELECT d.txn_date AS day, u.opening_balance + SUM(d.net) OVER (ORDER BY d.txn_date) AS balance
-          FROM (SELECT txn_date, SUM(${SIGNED}) AS net FROM transactions WHERE user_id = $1 GROUP BY txn_date) d
+          FROM (SELECT txn_date, SUM(${SIGNED}) AS net FROM transactions WHERE user_id = $1 AND ${IN_BANK} GROUP BY txn_date) d
          CROSS JOIN (SELECT opening_balance FROM users WHERE id = $1) u
      ) x
       WHERE ($2::date IS NULL OR day >= $2) AND ($3::date IS NULL OR day <= $3)
@@ -158,7 +160,7 @@ analyticsRouter.get('/account', async (req, res) => {
          FROM statements WHERE user_id = $1 AND period_start IS NOT NULL AND period_end IS NOT NULL`,
       [req.userId],
     ),
-    query<SignedTxn>(`SELECT txn_date, ${SIGNED} AS signed FROM transactions WHERE user_id = $1`, [req.userId]),
+    query<SignedTxn>(`SELECT txn_date, ${SIGNED} AS signed FROM transactions WHERE user_id = $1 AND ${IN_BANK}`, [req.userId]),
     query<{ opening_balance: number }>('SELECT opening_balance FROM users WHERE id = $1', [req.userId]),
   ]);
   res.json(buildAccount(statements, txns, user[0]?.opening_balance ?? 0));

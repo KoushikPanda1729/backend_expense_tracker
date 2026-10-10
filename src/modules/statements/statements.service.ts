@@ -231,7 +231,7 @@ async function manualMatches(
   if (fresh.length === 0) return [];
   const manual = await run(
     `SELECT id, txn_date, merchant, category, amount, is_income, note, label FROM transactions
-      WHERE user_id = $1 AND statement_id IS NULL AND dedupe_key LIKE 'm:%'
+      WHERE user_id = $1 AND statement_id IS NULL AND dedupe_key LIKE 'm:%' AND mode NOT IN ('Cash', 'Wallet')
         AND txn_date BETWEEN ($2::date - 1) AND ($3::date + 1)`,
     [userId, t[0]!.date, t[t.length - 1]!.date],
   );
