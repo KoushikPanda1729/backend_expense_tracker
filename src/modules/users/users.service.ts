@@ -69,6 +69,7 @@ export async function deleteData(userId: string, scopes: readonly DataScope[]) {
     if (has('transactions')) {
       await c.query('DELETE FROM transactions WHERE user_id = $1', [userId]);
       await c.query('DELETE FROM statements WHERE user_id = $1', [userId]);
+      await c.query('DELETE FROM payee_rules WHERE user_id = $1', [userId]);
       await c.query('UPDATE users SET opening_balance = 0, updated_at = now() WHERE id = $1', [userId]);
     }
     if (has('budgets')) await c.query('DELETE FROM budgets WHERE user_id = $1', [userId]);

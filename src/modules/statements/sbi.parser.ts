@@ -9,6 +9,9 @@ export interface ParsedTxn {
   mode: string; // UPI | IMPS | NEFT | ...
   category: Category;
   ref: string | null;
+  description: string; // what the bank printed
+  upiId: string | null; // UPI id or phone number of the other side
+  bank: string | null; // bank code of the other side (SBIN, CNRB, ...)
   dedupeKey: string;
 }
 
@@ -72,6 +75,11 @@ export function parseSbiText(text: string): ParsedStatement | null {
       const paid = ref ? txns.find((t) => t.ref === ref && !t.isIncome) : undefined;
       merchant = paid ? `Refund: ${paid.merchant}` : 'Refund';
     }
+    // UPI/DR/<ref>/<name>/<bank>/<upi id>/<note>: the PDF wraps long ids, so spaces are dropped from the id
+    const parts = raw.split('/');
+    const isUpi = /^UPI\/(DR|CR)\//.test(raw);
+    const upiId = isUpi && parts[5] ? parts[5].replace(/\s+/g, '').slice(0, 60) : null;
+    const bank = isUpi && parts[4] ? parts[4].replace(/\s+/g, '').toUpperCase().slice(0, 10) : null;
     txns.push({
       date,
       amount,
@@ -81,6 +89,9 @@ export function parseSbiText(text: string): ParsedStatement | null {
       mode: (raw.split(/[/*]/)[0] || 'Bank').slice(0, 20),
       category,
       ref,
+      description: raw.slice(0, 300),
+      upiId: upiId || null,
+      bank: bank || null,
       // direction is part of the key: a payment and its reversal share one bank reference
       dedupeKey: ref ? `r:${ref}:${isIncome ? 'i' : 'e'}` : `${date}|${amount}|${isIncome}|${merchant}`,
     });

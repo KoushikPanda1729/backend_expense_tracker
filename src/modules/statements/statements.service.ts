@@ -9,6 +9,7 @@ import { AppError, conflict, notFound, unprocessable } from '../../lib/errors';
 import { decryptBuffer, encryptBuffer } from '../../lib/secretbox';
 import { storage } from '../../storage';
 import * as passwords from '../pdfPasswords/pdfPasswords.service';
+import * as payees from '../payees/payees.service';
 import { extractPdfText, PdfPasswordError } from './pdf-text';
 import { unlockPdf, WrongPasswordError } from './qpdf';
 import { ParsedStatement, parseSbiText } from './sbi.parser';
@@ -210,6 +211,7 @@ export async function uploadStatement(userId: string, file: Express.Multer.File,
   const key = `statements/${userId}/${randomUUID()}.pdf.enc`;
   await storage.put(key, encryptBuffer(unlocked), 'application/octet-stream');
 
+  const rules = await payees.loadRules(userId); // categories the user chose for payees
   let result;
   try {
     result = await withTransaction(async (c) => {
@@ -237,10 +239,12 @@ export async function uploadStatement(userId: string, file: Express.Multer.File,
 
       // one round trip: unnest the columns, skip rows the user already has
       const inserted = await c.query(
-        `INSERT INTO transactions (user_id, statement_id, txn_date, merchant, mode, category, amount, is_income, ref, dedupe_key)
-         SELECT $1::uuid, $2::uuid, x.d, x.m, x.mode, x.c, x.a, x.i, x.r, x.k
-         FROM unnest($3::date[], $4::text[], $5::text[], $6::text[], $7::numeric[], $8::bool[], $9::text[], $10::text[])
-              AS x(d, m, mode, c, a, i, r, k)
+        `INSERT INTO transactions (user_id, statement_id, txn_date, merchant, mode, category, amount, is_income, ref, dedupe_key,
+                                   description, upi_id, bank)
+         SELECT $1::uuid, $2::uuid, x.d, x.m, x.mode, x.c, x.a, x.i, x.r, x.k, x.descr, x.upi, x.bank
+         FROM unnest($3::date[], $4::text[], $5::text[], $6::text[], $7::numeric[], $8::bool[], $9::text[], $10::text[],
+                     $11::text[], $12::text[], $13::text[])
+              AS x(d, m, mode, c, a, i, r, k, descr, upi, bank)
          ON CONFLICT (user_id, dedupe_key) DO NOTHING
          RETURNING id`,
         [
@@ -249,11 +253,14 @@ export async function uploadStatement(userId: string, file: Express.Multer.File,
           t.map((x) => x.date),
           t.map((x) => x.merchant),
           t.map((x) => x.mode),
-          t.map((x) => x.category),
+          t.map((x) => rules.apply(x.merchant, x.category, x.isIncome)),
           t.map((x) => x.amount),
           t.map((x) => x.isIncome),
           t.map((x) => x.ref),
           t.map((x) => x.dedupeKey),
+          t.map((x) => x.description),
+          t.map((x) => x.upiId),
+          t.map((x) => x.bank),
         ],
       );
       const added = inserted.rowCount ?? 0;

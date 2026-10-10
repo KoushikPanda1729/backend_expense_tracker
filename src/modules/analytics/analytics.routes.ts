@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { query } from '../../db/pool';
+import { listRules, keyOf } from '../payees/payees.service';
+import { buildReview, ReviewRow } from './review';
 
 export const analyticsRouter = Router();
 
@@ -132,4 +134,17 @@ analyticsRouter.get('/balance-trend', async (req, res) => {
     [req.userId, from ?? null, to ?? null],
   );
   res.json({ items: rows.map((r) => ({ date: r.day, balance: round2(r.balance) })) });
+});
+
+/** "Check your money": payments the app cannot explain, so the user can look them up and label them. */
+analyticsRouter.get('/review', async (req, res) => {
+  const [rows, rules] = await Promise.all([
+    query<ReviewRow>(
+      `SELECT id, txn_date, merchant, mode, category, amount, is_income, ref, description, upi_id, bank
+         FROM transactions WHERE user_id = $1 ORDER BY txn_date, id`,
+      [req.userId],
+    ),
+    listRules(req.userId),
+  ]);
+  res.json({ ...buildReview(rows, new Set(rules.map((r) => keyOf(r.merchant)))), known: rules });
 });

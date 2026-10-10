@@ -13,6 +13,10 @@ interface TxnRow {
   category: string;
   amount: number;
   is_income: boolean;
+  ref: string | null;
+  description: string | null;
+  upi_id: string | null;
+  bank: string | null;
   created_at: string;
 }
 
@@ -25,6 +29,10 @@ const toDto = (t: TxnRow) => ({
   amount: t.amount,
   isIncome: t.is_income,
   statementId: t.statement_id,
+  ref: t.ref,
+  upiId: t.upi_id,
+  bank: t.bank,
+  description: t.description,
   createdAt: t.created_at,
 });
 
