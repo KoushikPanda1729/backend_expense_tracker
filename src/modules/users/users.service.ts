@@ -50,7 +50,7 @@ export async function removePhoto(userId: string) {
   if (old) await quietDelete(old);
 }
 
-export const DATA_SCOPES = ['transactions', 'budgets', 'passwords', 'photo'] as const;
+export const DATA_SCOPES = ['transactions', 'budgets', 'passwords', 'photo', 'dues', 'funds'] as const;
 export type DataScope = (typeof DATA_SCOPES)[number];
 
 /**
@@ -74,6 +74,8 @@ export async function deleteData(userId: string, scopes: readonly DataScope[]) {
     }
     if (has('budgets')) await c.query('DELETE FROM budgets WHERE user_id = $1', [userId]);
     if (has('passwords')) await c.query('DELETE FROM pdf_passwords WHERE user_id = $1', [userId]);
+    if (has('dues')) await c.query('DELETE FROM dues WHERE user_id = $1', [userId]);
+    if (has('funds')) await c.query('DELETE FROM funds WHERE user_id = $1', [userId]); // entries go with them
   });
   await Promise.all(keys.map(quietDelete));
   if (has('photo')) await removePhoto(userId);
