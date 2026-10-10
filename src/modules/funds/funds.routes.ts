@@ -14,7 +14,10 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 interface FundRow {
   id: string;
   name: string;
+  invested_total: number | null;
   current_value: number | null;
+  last_amount: number | null;
+  monthly_sip: number | null;
   value_as_of: string | null;
   invested: number;
   withdrawn: number;
@@ -23,47 +26,52 @@ interface FundRow {
 }
 
 const fundSql = `
-  SELECT f.id, f.name, f.current_value, f.value_as_of,
+  SELECT f.id, f.name, f.invested_total, f.current_value, f.monthly_sip, f.value_as_of,
+         (SELECT e2.amount FROM fund_entries e2 WHERE e2.fund_id = f.id AND e2.kind = 'invest'
+           ORDER BY e2.entry_date DESC, e2.created_at DESC LIMIT 1) AS last_amount,
          COALESCE(SUM(e.amount) FILTER (WHERE e.kind = 'invest'), 0)   AS invested,
          COALESCE(SUM(e.amount) FILTER (WHERE e.kind = 'withdraw'), 0) AS withdrawn,
          COUNT(e.id)::int AS entries, MAX(e.entry_date) AS last_entry
     FROM funds f LEFT JOIN fund_entries e ON e.fund_id = f.id
    WHERE f.user_id = $1 /*AND*/
-   GROUP BY f.id ORDER BY f.name`;
+   GROUP BY f.id ORDER BY MAX(e.entry_date) DESC NULLS LAST, f.name`;
 
 function toDto(f: FundRow) {
-  const net = round2(f.invested - f.withdrawn);
-  const gain = f.current_value === null ? null : round2(f.current_value - net);
+  const fromStatements = round2(f.invested - f.withdrawn); // what the bank statements show went in
+  // the total invested as typed from the fund app; until it is typed, the statement amounts stand in
+  const invested = f.invested_total ?? fromStatements;
+  // returns and percentage are worked out from the two typed numbers
+  const gain = f.current_value === null ? null : round2(f.current_value - invested);
   return {
     id: f.id,
     name: f.name,
-    invested: round2(f.invested),
-    withdrawn: round2(f.withdrawn),
-    netInvested: net,
+    investedTotal: f.invested_total, // as typed, or null
+    invested, // what to show as the total invested
+    currentValue: f.current_value, // as typed, or null
+    gain,
+    gainPercent: gain !== null && invested > 0 ? Math.round((gain / invested) * 1000) / 10 : null,
+    // the amount of the latest statement payment: the monthly SIP
+    monthlySip: f.monthly_sip ?? f.last_amount, // typed by the user, else the latest statement payment
+    fromStatements,
     entryCount: f.entries,
     lastEntry: f.last_entry,
-    currentValue: f.current_value,
     valueAsOf: f.value_as_of,
-    gain,
-    gainPercent: gain !== null && net > 0 ? Math.round((gain / net) * 1000) / 10 : null,
   };
 }
 
-// every fund with what was put in, and the totals
+// every fund, and the totals across all of them
 fundsRouter.get('/', async (req, res) => {
   const items = (await query<FundRow>(fundSql.replace('/*AND*/', ''), [req.userId])).map(toDto);
-  const netInvested = round2(items.reduce((a, f) => a + f.netInvested, 0));
   const valued = items.filter((f) => f.currentValue !== null);
-  const currentValue = round2(valued.reduce((a, f) => a + (f.currentValue ?? 0), 0));
-  const investedInValued = round2(valued.reduce((a, f) => a + f.netInvested, 0));
   res.json({
     items,
     totals: {
-      netInvested,
-      // returns are only counted for funds whose current value the user entered
-      currentValue: valued.length ? currentValue : null,
-      gain: valued.length ? round2(currentValue - investedInValued) : null,
-      valuedFunds: valued.length,
+      invested: round2(items.reduce((a, f) => a + f.invested, 0)),
+      // current value and returns count the funds the user gave a current value for
+      currentValue: valued.length ? round2(valued.reduce((a, f) => a + (f.currentValue ?? 0), 0)) : null,
+      returns: valued.length ? round2(valued.reduce((a, f) => a + (f.gain ?? 0), 0)) : null,
+      investedInValued: round2(valued.reduce((a, f) => a + f.invested, 0)), // for the overall percentage
+      monthlySip: round2(items.reduce((a, f) => a + (f.monthlySip ?? 0), 0)),
     },
   });
 });
@@ -84,11 +92,11 @@ fundsRouter.get('/unassigned', async (req, res) => {
 });
 
 fundsRouter.post('/', async (req, res) => {
-  const b = z.object({ name, currentValue: z.number().min(0).optional() }).parse(req.body);
+  const b = z.object({ name, investedTotal: z.number().min(0).optional() }).parse(req.body);
   try {
     const rows = await query<{ id: string }>(
-      `INSERT INTO funds (user_id, name, current_value, value_as_of) VALUES ($1, $2, $3, CASE WHEN $3::numeric IS NULL THEN NULL ELSE CURRENT_DATE END) RETURNING id`,
-      [req.userId, b.name, b.currentValue ?? null],
+      `INSERT INTO funds (user_id, name, invested_total, value_as_of) VALUES ($1, $2, $3, CASE WHEN $3::numeric IS NULL THEN NULL ELSE CURRENT_DATE END) RETURNING id`,
+      [req.userId, b.name, b.investedTotal ?? null],
     );
     const f = (await query<FundRow>(fundSql.replace('/*AND*/', 'AND f.id = $2'), [req.userId, rows[0]!.id]))[0]!;
     res.status(201).json(toDto(f));
@@ -124,18 +132,32 @@ fundsRouter.get('/:id', async (req, res) => {
 fundsRouter.patch('/:id', async (req, res) => {
   const { id } = idParam.parse(req.params);
   const b = z
-    .object({ name: name.optional(), currentValue: z.number().min(0).nullable().optional() })
+    .object({
+      name: name.optional(),
+      investedTotal: z.number().min(0).nullable().optional(),
+      currentValue: z.number().min(0).nullable().optional(),
+      monthlySip: z.number().min(0).nullable().optional(),
+    })
     .refine((v) => Object.keys(v).length > 0, { message: 'Send at least one field to change' })
     .parse(req.body);
   try {
     const rows = await query(
       `UPDATE funds SET name = COALESCE($3, name),
-              current_value = CASE WHEN $4::boolean THEN $5::numeric ELSE current_value END,
-              value_as_of   = CASE WHEN $4::boolean THEN CASE WHEN $5::numeric IS NULL THEN NULL ELSE CURRENT_DATE END ELSE value_as_of END
+              invested_total = CASE WHEN $4::boolean THEN $5::numeric ELSE invested_total END,
+              current_value = CASE WHEN $6::boolean THEN $7::numeric ELSE current_value END,
+              monthly_sip = CASE WHEN $8::boolean THEN $9::numeric ELSE monthly_sip END
         WHERE id = $1 AND user_id = $2 RETURNING id`,
-      [id, req.userId, b.name ?? null, b.currentValue !== undefined, b.currentValue ?? null],
+      [id, req.userId, b.name ?? null, b.investedTotal !== undefined, b.investedTotal ?? null, b.currentValue !== undefined, b.currentValue ?? null, b.monthlySip !== undefined, b.monthlySip ?? null],
     );
     if (rows.length === 0) throw notFound('Fund not found');
+    if (b.investedTotal !== undefined || b.currentValue !== undefined) {
+      // "as of" is the day the numbers were typed in; no numbers left means no date
+      await query(
+        `UPDATE funds SET value_as_of = CASE WHEN invested_total IS NULL AND current_value IS NULL THEN NULL ELSE CURRENT_DATE END
+          WHERE id = $1 AND user_id = $2`,
+        [id, req.userId],
+      );
+    }
   } catch (e) {
     if (isUniqueViolation(e)) throw conflict('You already track a fund with that name');
     throw e;
