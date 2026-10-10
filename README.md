@@ -129,7 +129,7 @@ Before going live:
 
 - **Back up `ENCRYPTION_KEY`** somewhere safe. Without it saved PDF passwords and stored statements cannot be read.
 - **Back up the database** (`pgdata` volume, or a nightly `pg_dump` to S3). With S3 the PDFs are already off the server.
-- Files go to **S3** when `STORAGE_DRIVER=s3` (next section), so the server itself only needs a small disk. With `STORAGE_DRIVER=local` they stay on the `storage` volume.
+- Files go where `STORAGE_DRIVER` says: **`db`** (the `files` table in your Postgres: nothing else to set up, backed up with the data), **`s3`** (next section) or `local` (the `storage` volume on the server).
 - Keep `TRUST_PROXY=1` behind a proxy, and leave `CORS_ORIGINS` empty unless a browser app needs it.
 - Check `GET /ready` (database) from your monitor.
 
@@ -177,3 +177,9 @@ only what changed, so a small update takes under a minute. Roll back by deployin
 
 The phone app needs **HTTPS** (iOS blocks plain HTTP to a public address). Easiest: a domain pointed at the Elastic IP and
 Caddy in front (`your.domain { reverse_proxy localhost:4000 }`). Or skip public access and use Tailscale on the server and the phone.
+
+## Files in the database (`STORAGE_DRIVER=db`)
+
+Statements (about 50 KB each, already encrypted with `ENCRYPTION_KEY`) and profile photos are stored as `bytea` rows in the `files` table.
+500 MB of database holds roughly 10,000 statements. Deleting a statement, or the account, deletes its file rows. Back up the
+database and you have backed up the files. Switching from `local`/`s3` to `db` does not move existing files: re-import them.

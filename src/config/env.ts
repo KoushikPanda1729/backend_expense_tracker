@@ -22,8 +22,8 @@ const schema = z.object({
   ENCRYPTION_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/, 'ENCRYPTION_KEY must be 64 hex characters (openssl rand -hex 32)'),
   QPDF_PATH: z.string().default('qpdf'),
 
-  // where uploaded statements and photos live: a folder on this machine, or an S3 bucket
-  STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
+  // where uploaded statements and photos live: a folder on this machine, an S3 bucket, or the database
+  STORAGE_DRIVER: z.enum(['local', 's3', 'db']).default('local'),
   STORAGE_DIR: z.string().default('./storage'),
   S3_BUCKET: z.string().optional(),
   S3_REGION: z.string().default('ap-south-1'),
