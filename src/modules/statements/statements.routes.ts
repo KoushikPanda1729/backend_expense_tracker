@@ -27,7 +27,14 @@ const idParam = z.object({ id: z.string().uuid() });
 //   savePassword   "true" to remember the typed one, passwordLabel names it
 // With none of them, every saved password is tried automatically.
 const bool = z.enum(['true', 'false']).transform((v) => v === 'true');
+// merge: JSON [{manualId, key}] of hand-added entries the user accepted as the same payment as a statement row
+const mergeList = z
+  .array(z.object({ manualId: z.string().uuid(), key: z.string().max(300) }))
+  .max(500);
+const applyList = z.array(z.string().uuid()).max(500);
 const unlockFields = z.object({
+  merge: z.string().max(100_000).optional(),
+  apply: z.string().max(100_000).optional(), // JSON [transaction id] the user accepted the bank's version of
   passwordId: z.string().uuid().optional(),
   password: z.string().min(1).max(100).optional(),
   savePassword: bool.optional(),
@@ -48,7 +55,23 @@ statementsRouter.post('/preview', uploadLimiter, upload.single('file'), async (r
 // POST /statements   multipart/form-data, field name "file"
 statementsRouter.post('/', uploadLimiter, upload.single('file'), async (req, res) => {
   const f = unlockFields.parse(req.body ?? {});
-  res.status(201).json(await svc.uploadStatement(req.userId, needFile(req.file), f));
+  let merge: z.infer<typeof mergeList> = [];
+  if (f.merge) {
+    try {
+      merge = mergeList.parse(JSON.parse(f.merge));
+    } catch {
+      throw new AppError(400, 'BAD_REQUEST', '"merge" must be a JSON list of { manualId, key }');
+    }
+  }
+  let apply: string[] = [];
+  if (f.apply) {
+    try {
+      apply = applyList.parse(JSON.parse(f.apply));
+    } catch {
+      throw new AppError(400, 'BAD_REQUEST', '"apply" must be a JSON list of transaction ids');
+    }
+  }
+  res.status(201).json(await svc.uploadStatement(req.userId, needFile(req.file), { ...f, merge, apply }));
 });
 
 statementsRouter.get('/', async (req, res) => {

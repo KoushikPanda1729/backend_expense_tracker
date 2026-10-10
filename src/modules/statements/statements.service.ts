@@ -12,7 +12,8 @@ import * as passwords from '../pdfPasswords/pdfPasswords.service';
 import * as payees from '../payees/payees.service';
 import { extractPdfText, PdfPasswordError } from './pdf-text';
 import { unlockPdf, WrongPasswordError } from './qpdf';
-import { ParsedStatement, parseSbiText } from './sbi.parser';
+import { findManualMatches, ManualRow } from './manualMatch';
+import { ParsedStatement, ParsedTxn, parseSbiText } from './sbi.parser';
 
 export interface StatementRow {
   id: string;
@@ -145,6 +146,98 @@ async function existingKeys(userId: string, keys: string[]): Promise<Set<string>
   return new Set(rows.map((r) => r.dedupe_key));
 }
 
+interface ExistingRow {
+  id: string;
+  dedupe_key: string;
+  txn_date: string;
+  merchant: string;
+  category: string;
+  amount: number;
+}
+
+/**
+ * Rows the user already has (same bank reference) whose date, amount, name or category differ from what this
+ * file says. The user decides per row: accept = take the bank's version, reject = keep their own.
+ */
+async function diffExisting(userId: string, t: ParsedTxn[], have: Set<string>) {
+  const keys = t.filter((x) => have.has(x.dedupeKey)).map((x) => x.dedupeKey);
+  if (keys.length === 0) return [];
+  const rules = await payees.loadRules(userId);
+  const rows = await query<ExistingRow>(
+    'SELECT id, dedupe_key, txn_date, merchant, category, amount FROM transactions WHERE user_id = $1 AND dedupe_key = ANY($2::text[])',
+    [userId, keys],
+  );
+  const byKey = new Map(rows.map((r) => [r.dedupe_key, r]));
+  const out: {
+    id: string;
+    key: string;
+    isIncome: boolean;
+    fields: string[];
+    yours: { date: string; name: string; category: string; amount: number };
+    bank: { date: string; name: string; category: string; amount: number; description: string; upiId: string | null; bankCode: string | null };
+  }[] = [];
+  for (const b of t) {
+    const r = byKey.get(b.dedupeKey);
+    if (!r) continue;
+    const bankCategory = rules.apply(b.merchant, b.category, b.isIncome);
+    const fields = [
+      r.txn_date !== b.date && 'date',
+      Math.abs(r.amount - b.amount) > 0.004 && 'amount',
+      r.merchant !== b.merchant && 'name',
+      r.category !== bankCategory && 'category',
+    ].filter((f): f is string => typeof f === 'string');
+    if (fields.length === 0) continue;
+    out.push({
+      id: r.id,
+      key: b.dedupeKey,
+      isIncome: b.isIncome,
+      fields,
+      yours: { date: r.txn_date, name: r.merchant, category: r.category, amount: r.amount },
+      bank: {
+        date: b.date, name: b.merchant, category: bankCategory, amount: b.amount,
+        description: b.description, upiId: b.upiId, bankCode: b.bank,
+      },
+    });
+  }
+  return out.slice(0, 300);
+}
+
+/** Takes the bank's version for the rows the user accepted. Only rows the server itself found different are touched. */
+async function applyChanges(userId: string, t: ParsedTxn[], have: Set<string>, ids: string[]) {
+  if (ids.length === 0) return 0;
+  const wanted = new Set(ids);
+  const changes = (await diffExisting(userId, t, have)).filter((c) => wanted.has(c.id));
+  const byKey = new Map(t.map((x) => [x.dedupeKey, x]));
+  for (const c of changes) {
+    const b = byKey.get(c.key)!;
+    await query(
+      `UPDATE transactions SET txn_date = $3, amount = $4, merchant = $5, category = $6, description = $7,
+              upi_id = $8, bank = $9, updated_at = now()
+        WHERE id = $1 AND user_id = $2`,
+      [c.id, userId, c.bank.date, c.bank.amount, c.bank.name, c.bank.category, b.description, b.upiId, b.bank],
+    );
+  }
+  return changes.length;
+}
+
+/** Entries the user added by hand that look like rows of this statement (only rows the user does not have yet). */
+async function manualMatches(
+  run: (sql: string, params: unknown[]) => Promise<ManualRow[]>,
+  userId: string,
+  t: ParsedTxn[],
+  have: Set<string>,
+) {
+  const fresh = t.filter((x) => !have.has(x.dedupeKey));
+  if (fresh.length === 0) return [];
+  const manual = await run(
+    `SELECT id, txn_date, merchant, category, amount, is_income, note, label FROM transactions
+      WHERE user_id = $1 AND statement_id IS NULL AND dedupe_key LIKE 'm:%'
+        AND txn_date BETWEEN ($2::date - 1) AND ($3::date + 1)`,
+    [userId, t[0]!.date, t[t.length - 1]!.date],
+  );
+  return findManualMatches(fresh, manual);
+}
+
 /**
  * Step 1 of an import: what would happen if this file were uploaded. Saves nothing,
  * so the app can show "126 found, 80 new, 46 already imported" and let the user confirm.
@@ -155,6 +248,8 @@ export async function previewStatement(userId: string, file: Express.Multer.File
   const have = await existingKeys(userId, t.map((x) => x.dedupeKey));
   const alreadyUploaded =
     (await query('SELECT 1 FROM statements WHERE user_id = $1 AND sha256 = $2', [userId, sha256(file.buffer)])).length > 0;
+  const matches = await manualMatches((sql, p) => query<ManualRow>(sql, p), userId, t, have);
+  const changes = await diffExisting(userId, t, have);
 
   return {
     fileName: file.originalname,
@@ -177,6 +272,32 @@ export async function previewStatement(userId: string, file: Express.Multer.File
       amount: x.amount,
       isIncome: x.isIncome,
     })),
+    // rows the user already has that differ from this file: the user accepts or rejects each one
+    changes,
+    // entries the user added by hand that look like rows of this file: the user accepts or rejects each one
+    manualMatches: matches.map((m) => ({
+      manualId: m.manual.id,
+      key: m.bank.dedupeKey,
+      daysApart: m.daysApart,
+      manual: {
+        date: m.manual.txn_date,
+        name: m.manual.merchant,
+        category: m.manual.category,
+        amount: m.manual.amount,
+        isIncome: m.manual.is_income,
+        note: m.manual.note,
+        label: m.manual.label,
+      },
+      bank: {
+        date: m.bank.date,
+        name: m.bank.merchant,
+        category: m.bank.category,
+        amount: m.bank.amount,
+        description: m.bank.description,
+        upiId: m.bank.upiId,
+        ref: m.bank.ref,
+      },
+    })),
   };
 }
 
@@ -196,6 +317,10 @@ export interface UploadOptions extends UnlockOptions {
   /** Remember a typed password for next time. */
   savePassword?: boolean;
   passwordLabel?: string;
+  /** Hand-added entries the user accepted as the same payment as a statement row (manualId + the row's key). */
+  merge?: { manualId: string; key: string }[];
+  /** Ids of existing transactions where the user accepted the bank's version. */
+  apply?: string[];
 }
 
 /** Step 2: store the unlocked PDF (encrypted at rest) and import its transactions. */
@@ -205,7 +330,23 @@ export async function uploadStatement(userId: string, file: Express.Multer.File,
 
   const hash = sha256(original); // of the file as uploaded, so the same download is not imported twice
   const dup = (await query<{ id: string }>('SELECT id FROM statements WHERE user_id = $1 AND sha256 = $2', [userId, hash]))[0];
-  if (dup) throw conflict('This statement was already uploaded', { statementId: dup.id });
+  if (dup) {
+    // the same file again: nothing to import, but the user may still accept the bank's version of rows they edited
+    if (opts.apply && opts.apply.length > 0) {
+      const have = await existingKeys(userId, parsed.txns.map((x) => x.dedupeKey));
+      const applied = await applyChanges(userId, parsed.txns, have, opts.apply);
+      return {
+        statement: toStatementDto(await getStatement(userId, dup.id)),
+        added: 0,
+        skippedDuplicates: parsed.txns.length,
+        merged: 0,
+        applied,
+        unlockedWith: usedSaved ? { id: usedSaved.id, label: usedSaved.label } : null,
+        savedPassword: null,
+      };
+    }
+    throw conflict('This statement was already uploaded', { statementId: dup.id });
+  }
 
   // only the unlocked copy is kept, encrypted with the server key
   const key = `statements/${userId}/${randomUUID()}.pdf.enc`;
@@ -216,6 +357,14 @@ export async function uploadStatement(userId: string, file: Express.Multer.File,
   try {
     result = await withTransaction(async (c) => {
       const t = parsed.txns;
+      const have = await existingKeys(userId, t.map((x) => x.dedupeKey));
+      const wanted = opts.merge ?? [];
+      // only pairs the server itself would suggest can be merged (the client cannot invent one)
+      const accepted = (await manualMatches((sql, p) => c.query<ManualRow>(sql, p).then((r) => r.rows), userId, t, have)).filter(
+        (m) => wanted.some((w) => w.manualId === m.manual.id && w.key === m.bank.dedupeKey),
+      );
+      const mergedKeys = new Set(accepted.map((m) => m.bank.dedupeKey));
+      const ins = t.filter((x) => !mergedKeys.has(x.dedupeKey));
       const stmt = (
         await c.query<StatementRow>(
           `INSERT INTO statements
@@ -252,29 +401,54 @@ export async function uploadStatement(userId: string, file: Express.Multer.File,
         [
           userId,
           stmt.id,
-          t.map((x) => x.date),
-          t.map((x) => x.merchant),
-          t.map((x) => x.mode),
-          t.map((x) => rules.apply(x.merchant, x.category, x.isIncome)),
-          t.map((x) => x.amount),
-          t.map((x) => x.isIncome),
-          t.map((x) => x.ref),
-          t.map((x) => x.dedupeKey),
-          t.map((x) => x.description),
-          t.map((x) => x.upiId),
-          t.map((x) => x.bank),
+          ins.map((x) => x.date),
+          ins.map((x) => x.merchant),
+          ins.map((x) => x.mode),
+          ins.map((x) => rules.apply(x.merchant, x.category, x.isIncome)),
+          ins.map((x) => x.amount),
+          ins.map((x) => x.isIncome),
+          ins.map((x) => x.ref),
+          ins.map((x) => x.dedupeKey),
+          ins.map((x) => x.description),
+          ins.map((x) => x.upiId),
+          ins.map((x) => x.bank),
         ],
       );
       const added = inserted.rowCount ?? 0;
-      await c.query('UPDATE statements SET txn_count = $2 WHERE id = $1', [stmt.id, added]);
-      stmt.txn_count = added;
+
+      // accepted pairs: the hand-added row becomes the bank row (keeps the user's name, category, note and label)
+      for (const m of accepted) {
+        await c.query(
+          `UPDATE transactions SET statement_id = $3, txn_date = $4, dedupe_key = $5, ref = $6, description = $7,
+                  upi_id = $8, bank = $9, mode = $10, updated_at = now()
+            WHERE id = $1 AND user_id = $2 AND statement_id IS NULL`,
+          [m.manual.id, userId, stmt.id, m.bank.date, m.bank.dedupeKey, m.bank.ref, m.bank.description, m.bank.upiId, m.bank.bank, m.bank.mode],
+        );
+      }
+
+      // rows an older, overlapping statement already had now belong to this newer one, so the older
+      // statement can be deleted without losing them
+      await c.query(
+        `UPDATE transactions SET statement_id = $2
+          WHERE user_id = $1 AND dedupe_key = ANY($3::text[]) AND statement_id IS NOT NULL AND statement_id <> $2`,
+        [userId, stmt.id, t.map((x) => x.dedupeKey)],
+      );
+      await c.query(
+        `UPDATE statements s SET txn_count = (SELECT COUNT(*) FROM transactions x WHERE x.statement_id = s.id)
+          WHERE s.user_id = $1`,
+        [userId],
+      );
+      stmt.txn_count = (await c.query<{ n: number }>('SELECT txn_count AS n FROM statements WHERE id = $1', [stmt.id])).rows[0]!.n;
       await recomputeOpeningBalance(c, userId);
-      return { stmt, added, skipped: t.length - added };
+      return { stmt, added, skipped: ins.length - added, merged: accepted.length };
     });
   } catch (err) {
     await storage.delete(key).catch(() => undefined); // do not leave an orphan file
     throw err;
   }
+
+  // rows the user chose to take the bank's version of (they existed before this upload)
+  const applied = await applyChanges(userId, parsed.txns, new Set(parsed.txns.map((x) => x.dedupeKey)), opts.apply ?? []);
 
   // password bookkeeping happens after the import succeeded, and never fails it
   let savedPassword: { id: string; label: string } | null = null;
@@ -291,6 +465,8 @@ export async function uploadStatement(userId: string, file: Express.Multer.File,
     statement: toStatementDto(result.stmt),
     added: result.added,
     skippedDuplicates: result.skipped,
+    merged: result.merged,
+    applied,
     unlockedWith: usedSaved ? { id: usedSaved.id, label: usedSaved.label } : null,
     savedPassword,
   };
