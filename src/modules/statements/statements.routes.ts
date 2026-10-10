@@ -74,6 +74,22 @@ statementsRouter.post('/', uploadLimiter, upload.single('file'), async (req, res
   res.status(201).json(await svc.uploadStatement(req.userId, needFile(req.file), { ...f, merge, apply }));
 });
 
+// "Keep my version" for rows where the file differs: remembered, so they are not offered again
+statementsRouter.post('/dismiss-changes', async (req, res) => {
+  const items = z
+    .array(z.object({ id: z.string().uuid(), signature: z.string().min(1).max(64) }))
+    .max(500)
+    .parse(req.body?.items ?? []);
+  await svc.dismissChanges(req.userId, items);
+  res.status(204).end();
+});
+
+// fills in details older imports did not save (UPI id, bank, reference), from the stored PDF
+statementsRouter.post('/:id/reread', async (req, res) => {
+  const { id } = idParam.parse(req.params);
+  res.json(await svc.rereadStatement(req.userId, id));
+});
+
 statementsRouter.get('/', async (req, res) => {
   res.json({ items: await svc.listStatements(req.userId) });
 });

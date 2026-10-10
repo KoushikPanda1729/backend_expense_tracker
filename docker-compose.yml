@@ -1,0 +1,48 @@
+# One-server deployment: Postgres + migrations + the API, with files kept on a volume.
+#   cp .env.production.example .env.production   (fill it in)
+#   docker compose --env-file .env.production up -d --build
+# Put an HTTPS reverse proxy (Caddy, nginx, a cloud load balancer) in front of port 4000.
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kharcha
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: kharcha_db
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kharcha -d kharcha_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # runs once, creates/updates the tables, then exits
+  migrate:
+    build: .
+    command: ["npx", "node-pg-migrate", "up", "-m", "migrations"]
+    environment:
+      DATABASE_URL: postgres://kharcha:${POSTGRES_PASSWORD}@db:5432/kharcha_db
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: .
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      DATABASE_URL: postgres://kharcha:${POSTGRES_PASSWORD}@db:5432/kharcha_db
+      STORAGE_DIR: /app/storage
+    ports:
+      - "4000:4000"
+    volumes:
+      - storage:/app/storage # uploaded statements: keep this volume (and back it up)
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
+  storage:

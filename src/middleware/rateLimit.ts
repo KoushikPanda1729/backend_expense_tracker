@@ -20,6 +20,15 @@ export const authLimiter = rateLimit({
   message: body('Too many attempts, try again in a few minutes'),
 });
 
+/** Refresh runs on every access-token renewal, so it gets more room than login (still capped). */
+export const refreshLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  limit: 200,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: body('Too many requests, try again in a few minutes'),
+});
+
 /** Uploads are the expensive calls. */
 export const uploadLimiter = rateLimit({
   windowMs: 60 * 60_000,

@@ -146,6 +146,9 @@ async function existingKeys(userId: string, keys: string[]): Promise<Set<string>
   return new Set(rows.map((r) => r.dedupe_key));
 }
 
+const signatureOf = (date: string, amount: number, name: string, category: string) =>
+  sha256(`${date}|${amount.toFixed(2)}|${name}|${category}`).slice(0, 16);
+
 interface ExistingRow {
   id: string;
   dedupe_key: string;
@@ -168,9 +171,19 @@ async function diffExisting(userId: string, t: ParsedTxn[], have: Set<string>) {
     [userId, keys],
   );
   const byKey = new Map(rows.map((r) => [r.dedupe_key, r]));
+  // rows where the user already said "keep mine" for this exact bank version
+  const dismissed = new Map(
+    (
+      await query<{ transaction_id: string; signature: string }>(
+        'SELECT transaction_id, signature FROM dismissed_changes WHERE user_id = $1 AND transaction_id = ANY($2::uuid[])',
+        [userId, rows.map((r) => r.id)],
+      )
+    ).map((d) => [d.transaction_id, d.signature]),
+  );
   const out: {
     id: string;
     key: string;
+    signature: string;
     isIncome: boolean;
     fields: string[];
     yours: { date: string; name: string; category: string; amount: number };
@@ -187,9 +200,12 @@ async function diffExisting(userId: string, t: ParsedTxn[], have: Set<string>) {
       r.category !== bankCategory && 'category',
     ].filter((f): f is string => typeof f === 'string');
     if (fields.length === 0) continue;
+    const signature = signatureOf(b.date, b.amount, b.merchant, bankCategory);
+    if (dismissed.get(r.id) === signature) continue;
     out.push({
       id: r.id,
       key: b.dedupeKey,
+      signature,
       isIncome: b.isIncome,
       fields,
       yours: { date: r.txn_date, name: r.merchant, category: r.category, amount: r.amount },
@@ -500,4 +516,52 @@ export async function deleteStatement(userId: string, id: string) {
     await recomputeOpeningBalance(c, userId);
   });
   await storage.delete(row.storage_key).catch((err) => logger.warn({ err, key: row.storage_key }, 'file delete failed'));
+}
+
+/** "Keep my version": remember it, so this difference is not offered again unless the bank's side changes. */
+export async function dismissChanges(userId: string, items: { id: string; signature: string }[]) {
+  for (const i of items) {
+    await query(
+      `INSERT INTO dismissed_changes (user_id, transaction_id, signature)
+       SELECT $1, t.id, $3 FROM transactions t WHERE t.id = $2 AND t.user_id = $1
+       ON CONFLICT (user_id, transaction_id) DO UPDATE SET signature = EXCLUDED.signature, created_at = now()`,
+      [userId, i.id, i.signature],
+    );
+  }
+}
+
+/**
+ * Reads the stored PDF again and fills in what older imports did not save: the bank's description, UPI id,
+ * bank code and reference, and the header balance. Names, categories, notes and labels are never touched.
+ */
+export async function rereadStatement(userId: string, id: string) {
+  const row = await getStatement(userId, id);
+  const { data } = await openStatementFile(row);
+  const buf = Buffer.isBuffer(data) ? data : await readAll(data);
+  let parsed: ParsedStatement | null;
+  try {
+    parsed = parseSbiText(await extractPdfText(buf));
+  } catch (err) {
+    logger.warn({ err }, 'reread failed');
+    throw unprocessable('Could not read the stored PDF');
+  }
+  if (!parsed) throw unprocessable('No transactions found in the stored PDF');
+
+  let updated = 0;
+  for (const t of parsed.txns) {
+    const r = await query(
+      `UPDATE transactions SET description = $3, upi_id = $4, bank = $5, ref = COALESCE(ref, $6), updated_at = now()
+        WHERE user_id = $1 AND dedupe_key = $2 AND (description IS NULL OR upi_id IS NULL OR bank IS NULL)
+        RETURNING id`,
+      [userId, t.dedupeKey, t.description, t.upiId, t.bank, t.ref],
+    );
+    updated += r.length;
+  }
+  if (parsed.asOf) {
+    await query(
+      'UPDATE statements SET balance_asof_date = COALESCE(balance_asof_date, $3), balance_asof = COALESCE(balance_asof, $4) WHERE id = $1 AND user_id = $2',
+      [id, userId, parsed.asOf.date, parsed.asOf.amount],
+    );
+  }
+  return { updated, total: parsed.txns.length };
 }

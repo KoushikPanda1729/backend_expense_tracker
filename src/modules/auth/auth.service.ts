@@ -82,20 +82,32 @@ export async function login(input: LoginInput, meta: RequestMeta) {
 
 /** Rotates the refresh token. A token that is used twice revokes every session of that user. */
 export async function refresh(token: string, meta: RequestMeta) {
+  // one atomic statement: of two parallel requests with the same token, only one can revoke it and win
+  const won = (
+    await query<{ user_id: string }>(
+      `UPDATE refresh_tokens SET revoked_at = now()
+        WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now() RETURNING user_id`,
+      [sha256(token)],
+    )
+  )[0];
+  if (won) return issueTokens(won.user_id, meta);
+
   const row = (
-    await query<{ id: string; user_id: string; revoked_at: string | null; expires_at: string }>(
-      'SELECT id, user_id, revoked_at, expires_at FROM refresh_tokens WHERE token_hash = $1',
+    await query<{ user_id: string; revoked_ago_s: number | null; expired: boolean }>(
+      `SELECT user_id, EXTRACT(EPOCH FROM (now() - revoked_at))::float AS revoked_ago_s, expires_at <= now() AS expired
+         FROM refresh_tokens WHERE token_hash = $1`,
       [sha256(token)],
     )
   )[0];
   if (!row) throw unauthorized('Invalid refresh token');
-  if (row.revoked_at) {
-    await query('UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL', [row.user_id]);
+  if (row.revoked_ago_s !== null) {
+    // used a moment ago: a duplicate request, not theft. Later reuse signs the user out everywhere.
+    if (row.revoked_ago_s > 10) {
+      await query('UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL', [row.user_id]);
+    }
     throw unauthorized('Refresh token was already used');
   }
-  if (new Date(row.expires_at) < new Date()) throw unauthorized('Refresh token expired');
-  await query('UPDATE refresh_tokens SET revoked_at = now() WHERE id = $1', [row.id]);
-  return issueTokens(row.user_id, meta);
+  throw unauthorized('Refresh token expired');
 }
 
 export async function logout(token: string) {

@@ -116,3 +116,19 @@ Security notes:
 - No password reset yet (planned; changing the password while signed in works).
 - Local file storage until S3 is added.
 - Add a worker queue if statements get big enough that parsing should not block the request.
+
+## Deploying (one server)
+
+1. `cp .env.production.example .env.production` and fill in `POSTGRES_PASSWORD`, `JWT_ACCESS_SECRET`, `ENCRYPTION_KEY`.
+2. `docker compose --env-file .env.production up -d --build`. This starts Postgres, runs the migrations once, then starts the API on port 4000.
+   The image already contains **qpdf** (needed to open locked statements).
+3. Put an **HTTPS** reverse proxy in front of port 4000 (Caddy: `your.domain { reverse_proxy localhost:4000 }`).
+4. In the app, set `API_BASE_URL=https://your.domain/api/v1` in `frontend/.env` and rebuild.
+
+Before going live:
+
+- **Back up `ENCRYPTION_KEY`** somewhere safe. Without it saved PDF passwords and stored statements cannot be read.
+- **Back up the two volumes**: `pgdata` (the database) and `storage` (the encrypted statement PDFs).
+- Files are stored on the `storage` volume (one server). Moving to S3 means adding `src/storage/s3.ts` that implements `StorageDriver`; nothing else changes.
+- Keep `TRUST_PROXY=1` behind a proxy, and leave `CORS_ORIGINS` empty unless a browser app needs it.
+- Check `GET /ready` (database) from your monitor.

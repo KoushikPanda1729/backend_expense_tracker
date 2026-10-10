@@ -22,7 +22,8 @@ export interface ParsedStatement {
   asOf: { date: string; amount: number } | null;
 }
 
-const START = /(\d\d)\/(\d\d)\/(\d{4})\s+\d\d\/\d\d\/\d{4}\s+/g;
+// the two dates of a row are on one line: [ \t] (not \s) so a date at the end of a header line is never taken as a row start
+const START = /(\d\d)\/(\d\d)\/(\d{4})[ \t]+\d\d\/\d\d\/\d{4}\s+/g;
 const MONEY = /([\d,]+\.\d\d)\s+([\d,]+\.\d\d)/;
 const num = (s: string) => parseFloat(s.replace(/,/g, ''));
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -35,6 +36,13 @@ function merchantOf(raw: string): string {
   else m = p.length > 2 ? p[p.length - 1]! : raw;
   m = m.trim();
   return (m || 'Unknown').slice(0, 120);
+}
+
+/** No reference number: the first row keeps the plain key, an identical second one gets #2 and so on. */
+function fallbackKey(seen: Map<string, number>, base: string): string {
+  const n = (seen.get(base) ?? 0) + 1;
+  seen.set(base, n);
+  return n === 1 ? base : `${base}#${n}`;
 }
 
 function refOf(raw: string): string | null {
@@ -52,6 +60,7 @@ export function parseSbiText(text: string): ParsedStatement | null {
   const starts = [...text.matchAll(START)];
   const txns: ParsedTxn[] = [];
   let prev: number | null = null;
+  const repeats = new Map<string, number>(); // identical rows without a reference number on one day
 
   for (let i = 0; i < starts.length; i++) {
     const m = starts[i]!;
@@ -71,7 +80,8 @@ export function parseSbiText(text: string): ParsedStatement | null {
     const date = `${m[3]}-${m[2]}-${m[1]}`;
     const ref = refOf(raw);
     const { category, name } = classify(raw, isIncome);
-    let merchant = name ?? merchantOf(raw);
+    // some rows print no description at all
+    let merchant = name ?? (raw ? merchantOf(raw) : isIncome ? 'Bank credit' : 'Bank debit');
     // UPI/DRC/<ref>/... is a refund: it has no shop name, so borrow it from the payment with the same reference
     if (raw.startsWith('UPI/DRC/')) {
       const paid = ref ? txns.find((t) => t.ref === ref && !t.isIncome) : undefined;
@@ -95,7 +105,7 @@ export function parseSbiText(text: string): ParsedStatement | null {
       upiId: upiId || null,
       bank: bank || null,
       // direction is part of the key: a payment and its reversal share one bank reference
-      dedupeKey: ref ? `r:${ref}:${isIncome ? 'i' : 'e'}` : `${date}|${amount}|${isIncome}|${merchant}`,
+      dedupeKey: ref ? `r:${ref}:${isIncome ? 'i' : 'e'}` : fallbackKey(repeats, `${date}|${amount}|${isIncome}|${merchant}`),
     });
   }
 

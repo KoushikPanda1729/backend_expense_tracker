@@ -74,6 +74,29 @@ describe('parseSbiText', () => {
     expect(t[3]!.merchant).toBe('Refund: Indian Railways');
   });
 
+  it('keeps two identical payments without a reference number as two rows', () => {
+    const t = parseSbiText(`
+10/09/2026 10/09/2026 NEFT*ABC*XYZ*ACME LTD
+20.00 980.00
+10/09/2026 10/09/2026 NEFT*ABC*XYZ*ACME LTD
+20.00 960.00
+`)!.txns;
+    expect(t).toHaveLength(2);
+    expect(new Set(t.map((x) => x.dedupeKey)).size).toBe(2);
+    // the first keeps the plain key, so rows imported before this change still match
+    expect(t[0]!.dedupeKey).not.toContain('#');
+  });
+
+  it('names a row that has no description', () => {
+    const t = parseSbiText(`
+25/09/2026 25/09/2026 UPI/DR/626847339643/MUKESH
+K/YESB/paytmqr6ln/UPI
+5.00 1689.49
+25/09/2026 25/09/2026 132.00 1821.49
+`)!.txns;
+    expect(t[1]!.merchant).toBe('Bank credit');
+  });
+
   it('categorises by keyword and by direction', () => {
     expect(r.txns[1]!.category).toBe('Food');
     expect(r.txns[2]!.category).toBe('Salary');
