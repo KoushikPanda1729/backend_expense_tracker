@@ -220,8 +220,8 @@ export async function uploadStatement(userId: string, file: Express.Multer.File,
         await c.query<StatementRow>(
           `INSERT INTO statements
              (user_id, original_name, storage_key, size_bytes, sha256, status, period_start, period_end,
-              opening_balance, closing_balance, file_encrypted, was_locked)
-           VALUES ($1, $2, $3, $4, $5, 'parsed', $6, $7, $8, $9, true, $10) RETURNING *`,
+              opening_balance, closing_balance, file_encrypted, was_locked, balance_asof_date, balance_asof)
+           VALUES ($1, $2, $3, $4, $5, 'parsed', $6, $7, $8, $9, true, $10, $11, $12) RETURNING *`,
           [
             userId,
             file.originalname.slice(0, 200),
@@ -233,6 +233,8 @@ export async function uploadStatement(userId: string, file: Express.Multer.File,
             parsed.opening,
             t[t.length - 1]!.balance,
             wasLocked,
+            parsed.asOf?.date ?? null,
+            parsed.asOf?.amount ?? null,
           ],
         )
       ).rows[0]!;

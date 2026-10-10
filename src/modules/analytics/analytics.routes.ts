@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { query } from '../../db/pool';
 import { listRules, keyOf } from '../payees/payees.service';
+import { buildAccount, SignedTxn, StatementRow } from './account';
 import { buildReview, ReviewRow } from './review';
 
 export const analyticsRouter = Router();
@@ -147,4 +148,18 @@ analyticsRouter.get('/review', async (req, res) => {
     listRules(req.userId),
   ]);
   res.json({ ...buildReview(rows, new Set(rules.map((r) => keyOf(r.merchant)))), known: rules });
+});
+
+/** The real account balance: the SBI header balance of the newest statement plus anything after it. */
+analyticsRouter.get('/account', async (req, res) => {
+  const [statements, txns, user] = await Promise.all([
+    query<StatementRow>(
+      `SELECT period_start, period_end, opening_balance, closing_balance, balance_asof_date, balance_asof
+         FROM statements WHERE user_id = $1 AND period_start IS NOT NULL AND period_end IS NOT NULL`,
+      [req.userId],
+    ),
+    query<SignedTxn>(`SELECT txn_date, ${SIGNED} AS signed FROM transactions WHERE user_id = $1`, [req.userId]),
+    query<{ opening_balance: number }>('SELECT opening_balance FROM users WHERE id = $1', [req.userId]),
+  ]);
+  res.json(buildAccount(statements, txns, user[0]?.opening_balance ?? 0));
 });

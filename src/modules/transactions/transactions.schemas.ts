@@ -28,18 +28,21 @@ const fields = z.object({
   isIncome: z.boolean(),
 });
 const mode = z.string().trim().min(1).max(20);
+// the user's own comment and tag; an empty string clears it
+const note = z.string().trim().max(500);
+const label = z.string().trim().max(40);
 
 // income entries must use an income category and the other way round
 const categoryMatchesType = (v: { category: string; isIncome: boolean }) =>
   (v.isIncome ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).some((c) => c === v.category);
 
 export const createSchema = fields
-  .extend({ mode: mode.default('Manual') })
+  .extend({ mode: mode.default('Manual'), note: note.optional(), label: label.optional() })
   .refine(categoryMatchesType, { message: 'Category does not match the transaction type', path: ['category'] });
 
 // no defaults here, so a PATCH only changes what the client sends
 export const updateSchema = fields
-  .extend({ mode })
+  .extend({ mode, note, label })
   .partial()
   .refine((v) => Object.keys(v).length > 0, { message: 'Send at least one field to change' });
 

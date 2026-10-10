@@ -17,6 +17,8 @@ interface TxnRow {
   description: string | null;
   upi_id: string | null;
   bank: string | null;
+  note: string | null;
+  label: string | null;
   created_at: string;
 }
 
@@ -33,6 +35,8 @@ const toDto = (t: TxnRow) => ({
   upiId: t.upi_id,
   bank: t.bank,
   description: t.description,
+  note: t.note,
+  label: t.label,
   createdAt: t.created_at,
 });
 
@@ -76,7 +80,7 @@ export async function listTransactions(userId: string, q: ListQuery) {
   if (q.category?.length) add((n) => `category = ANY($${n}::text[])`, q.category);
   if (q.q) {
     const like = `%${q.q.replace(/[\\%_]/g, '\\$&')}%`;
-    add((n) => `(merchant ILIKE $${n} OR category ILIKE $${n})`, like);
+    add((n) => `(merchant ILIKE $${n} OR category ILIKE $${n} OR note ILIKE $${n} OR label ILIKE $${n})`, like);
   }
 
   const byAmount = q.sort === 'highest' || q.sort === 'lowest';
@@ -116,10 +120,13 @@ export async function listTransactions(userId: string, q: ListQuery) {
 
 export async function createTransaction(userId: string, input: CreateInput) {
   const rows = await query<TxnRow>(
-    `INSERT INTO transactions (user_id, txn_date, merchant, mode, category, amount, is_income, dedupe_key)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+    `INSERT INTO transactions (user_id, txn_date, merchant, mode, category, amount, is_income, dedupe_key, note, label)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
     // manual entries never collide with anything
-    [userId, input.date, input.merchant, input.mode, input.category, input.amount, input.isIncome, `m:${randomUUID()}`],
+    [
+      userId, input.date, input.merchant, input.mode, input.category, input.amount, input.isIncome,
+      `m:${randomUUID()}`, input.note || null, input.label || null,
+    ],
   );
   return toDto(rows[0]!);
 }
@@ -135,15 +142,19 @@ export async function updateTransaction(userId: string, id: string, patch: Parti
     category: patch.category ?? current.category,
     amount: patch.amount ?? current.amount,
     isIncome: patch.isIncome ?? current.is_income,
+    // undefined = keep, '' = clear
+    note: patch.note === undefined ? current.note : patch.note || null,
+    label: patch.label === undefined ? current.label : patch.label || null,
   };
   const allowed: readonly string[] = next.isIncome ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
   if (!allowed.includes(next.category)) throw badRequest('Category does not match the transaction type');
 
   const rows = await query<TxnRow>(
     `UPDATE transactions
-        SET txn_date = $3, merchant = $4, mode = $5, category = $6, amount = $7, is_income = $8, updated_at = now()
+        SET txn_date = $3, merchant = $4, mode = $5, category = $6, amount = $7, is_income = $8,
+            note = $9, label = $10, updated_at = now()
       WHERE id = $1 AND user_id = $2 RETURNING *`,
-    [id, userId, next.date, next.merchant, next.mode, next.category, next.amount, next.isIncome],
+    [id, userId, next.date, next.merchant, next.mode, next.category, next.amount, next.isIncome, next.note, next.label],
   );
   return toDto(rows[0]!);
 }

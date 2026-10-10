@@ -18,6 +18,8 @@ export interface ParsedTxn {
 export interface ParsedStatement {
   txns: ParsedTxn[]; // oldest first
   opening: number;
+  /** "Balance as on 09-10-2026 : 2494.86" from the statement header: the real balance on the download day. */
+  asOf: { date: string; amount: number } | null;
 }
 
 const START = /(\d\d)\/(\d\d)\/(\d{4})\s+\d\d\/\d\d\/\d{4}\s+/g;
@@ -100,5 +102,7 @@ export function parseSbiText(text: string): ParsedStatement | null {
   if (txns.length === 0) return null;
   const first = txns[0]!;
   const opening = round2(first.balance - (first.isIncome ? first.amount : -first.amount));
-  return { txns, opening };
+  const h = /Balance\s*as\s*on\s*(\d\d)-(\d\d)-(\d{4})\s*:\s*(-?[\d,]+\.\d\d)/i.exec(text);
+  const asOf = h ? { date: `${h[3]}-${h[2]}-${h[1]}`, amount: round2(num(h[4]!)) } : null;
+  return { txns, opening, asOf };
 }
