@@ -7,3 +7,5 @@ coverage/
 storage/
 *.log
 .DS_Store
+
+!.env.production.example

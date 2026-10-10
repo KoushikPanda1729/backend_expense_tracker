@@ -128,7 +128,52 @@ Security notes:
 Before going live:
 
 - **Back up `ENCRYPTION_KEY`** somewhere safe. Without it saved PDF passwords and stored statements cannot be read.
-- **Back up the two volumes**: `pgdata` (the database) and `storage` (the encrypted statement PDFs).
-- Files are stored on the `storage` volume (one server). Moving to S3 means adding `src/storage/s3.ts` that implements `StorageDriver`; nothing else changes.
+- **Back up the database** (`pgdata` volume, or a nightly `pg_dump` to S3). With S3 the PDFs are already off the server.
+- Files go to **S3** when `STORAGE_DRIVER=s3` (next section), so the server itself only needs a small disk. With `STORAGE_DRIVER=local` they stay on the `storage` volume.
 - Keep `TRUST_PROXY=1` behind a proxy, and leave `CORS_ORIGINS` empty unless a browser app needs it.
 - Check `GET /ready` (database) from your monitor.
+
+## Files in S3
+
+Set in `.env.production`: `STORAGE_DRIVER=s3`, `S3_BUCKET`, `S3_REGION`, optional `S3_PREFIX=kharcha/`.
+
+1. Create a **private** bucket (Block all public access: on). Turn on **versioning** if you want undo for deletes.
+2. On EC2, create an **IAM role** for the instance with this policy (replace `BUCKET`) and attach it. No access keys are needed:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+    "Resource": "arn:aws:s3:::BUCKET/kharcha/*"
+  }]
+}
+```
+
+   Off AWS, set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` for a user with the same policy.
+3. Statements are encrypted with `ENCRYPTION_KEY` before upload, and S3 encrypts at rest too, so neither S3 nor anyone with bucket access can read a statement without that key.
+4. For a local S3-compatible store (MinIO) also set `S3_ENDPOINT=http://localhost:9000`.
+
+Existing files on disk are not moved automatically. Switching the driver on an account that already has statements leaves those
+old files unreadable; copy `storage/` into the bucket under the same keys (with the prefix) first, or re-import.
+
+## Deploy straight from your machine (no git, no CI)
+
+`deploy/deploy.sh` copies this folder to the server over SSH and builds and runs the Docker image **on the server**.
+There is no registry, and no ARM/x86 mismatch, because the image is built where it runs.
+
+One-time, on AWS: launch an **Ubuntu 24.04 `t3.small`**, attach an Elastic IP and the S3 IAM role (see "Files in S3"), and open
+ports 22 (your IP only) and 4000 (or 80/443 behind a proxy) in its security group.
+
+```bash
+cp .env.production.example .env.production     # fill in the secrets and S3_BUCKET
+./deploy/deploy.sh ubuntu@<server-ip> -i ~/.ssh/<key>.pem --setup   # first time: also installs Docker + swap
+./deploy/deploy.sh ubuntu@<server-ip> -i ~/.ssh/<key>.pem           # every later deploy
+```
+
+It stops with an error if the secrets are empty, and finishes by calling `GET /ready` on the server. A deploy rebuilds
+only what changed, so a small update takes under a minute. Roll back by deploying the previous version of the folder.
+
+The phone app needs **HTTPS** (iOS blocks plain HTTP to a public address). Easiest: a domain pointed at the Elastic IP and
+Caddy in front (`your.domain { reverse_proxy localhost:4000 }`). Or skip public access and use Tailscale on the server and the phone.

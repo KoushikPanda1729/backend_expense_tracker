@@ -22,14 +22,25 @@ const schema = z.object({
   ENCRYPTION_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/, 'ENCRYPTION_KEY must be 64 hex characters (openssl rand -hex 32)'),
   QPDF_PATH: z.string().default('qpdf'),
 
+  // where uploaded statements and photos live: a folder on this machine, or an S3 bucket
+  STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
   STORAGE_DIR: z.string().default('./storage'),
+  S3_BUCKET: z.string().optional(),
+  S3_REGION: z.string().default('ap-south-1'),
+  S3_PREFIX: z.string().default(''), // e.g. "kharcha/"; must end with "/" when set
+  S3_ENDPOINT: z.string().optional(), // only for S3-compatible stores such as MinIO
   MAX_UPLOAD_MB: z.coerce.number().positive().default(15),
 
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   TRUST_PROXY: z.coerce.number().int().min(0).default(0),
 });
 
-const parsed = schema.safeParse(process.env);
+const parsed = schema
+  .refine((v) => v.STORAGE_DRIVER !== 's3' || Boolean(v.S3_BUCKET), {
+    message: 'S3_BUCKET is required when STORAGE_DRIVER=s3',
+    path: ['S3_BUCKET'],
+  })
+  .safeParse(process.env);
 if (!parsed.success) {
   console.error('Invalid environment configuration:');
   console.error(parsed.error.flatten().fieldErrors);
